@@ -1,0 +1,5 @@
+# Local SSH credentials and host trust records must not be committed.
+/server_access/
+*.err
+*.out
+venv/
