@@ -4,6 +4,16 @@ All training, GPU tests, and experiment execution must run on HPC compute nodes 
 
 ## Connection and paths
 
+All HPC tooling and documentation live in `hpc/`:
+
+- `README.md`: this guide and execution requirements.
+- `submit_hpc.ps1`: SSH submission and delayed output check.
+- `hpc_runtime.sh`: virtual environment, status messages, and heartbeat.
+- `test_shell.sh`: Slurm smoke test and batch template.
+- `test_gpu_access.sh` and `test.py`: Slurm GPU diagnostic.
+
+Commands below run from the repository root unless stated otherwise. Local credentials remain in the ignored root `server_access/` folder; the submission helper resolves that path independently of the working directory. The remote virtual environment remains at the repository root. Batch logs live beside scripts in `~/data/VirtualSink/hpc/`.
+
 | Setting | Value |
 | --- | --- |
 | SSH account | `alex116u1@login02.c2.hpc.bibalex.org` |
@@ -41,7 +51,7 @@ echo "Hello first"
 
 Keep every `#SBATCH` directive above the first executable command. `%j` in log names becomes the job ID. Shell variables such as `$HOME` are not expanded inside directives. See the [official sbatch reference](https://slurm.schedmd.com/sbatch.html).
 
-For a training script, copy this template to `train_job.sh`, choose a descriptive job name, and set a suitable time limit. Replace the last `echo` with your actual training command, for example:
+For a training script, copy this template to `hpc/train_job.sh`, choose a descriptive job name, update the log filename prefixes, and set a suitable time limit. Replace the last `echo` with your actual training command, for example:
 
 ```bash
 # Example only: train.py must exist and accept these arguments.
@@ -58,6 +68,8 @@ For the existing CUDA diagnostic, use `python -u hpc/test.py` inside the batch s
 `git pull` fetches committed and pushed changes only. It does not copy local untracked files. Commit and push the intended scripts and source files through your normal Git workflow before submission. Do not commit the key, virtual environment, datasets, or generated checkpoints.
 
 For a one-off test with uncommitted files, copy only the required files from PowerShell at the repository root:
+
+Ensure `~/data/VirtualSink/hpc/` exists remotely first (normally created by pulling the reorganized repository). If necessary, use the SSH helper below with `mkdir -p ~/data/VirtualSink/hpc` before copying.
 
 ```powershell
 $scp = "$env:WINDIR\System32\OpenSSH\scp.exe"
@@ -129,8 +141,8 @@ Use the `Invoke-Hpc` function above. Replace `212877` with the ID returned by yo
 Invoke-Hpc 'squeue -u alex116u1'
 Invoke-Hpc 'scontrol show job 212877'
 Invoke-Hpc 'sacct -j 212877 --format=JobID,JobName,State,ExitCode,Elapsed'
-Invoke-Hpc 'cd ~/data/VirtualSink && tail -n 80 compare-212877.out'
-Invoke-Hpc 'cd ~/data/VirtualSink && tail -n 80 compare-212877.err'
+Invoke-Hpc 'cd ~/data/VirtualSink/hpc && tail -n 80 test_gpu_access-212877.out'
+Invoke-Hpc 'cd ~/data/VirtualSink/hpc && tail -n 80 test_gpu_access-212877.err'
 ```
 
 Current scripts use `<script-name>-<ID>.out` and `.err` beside the remote script. Job 212877 predates this convention and used `compare-212877.out` and `.err`. Log files may not exist until the job starts. Each check closes its SSH connection; avoid `tail -f` if you want the command to return immediately.
