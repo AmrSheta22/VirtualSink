@@ -29,11 +29,11 @@ Both batch scripts source `hpc_runtime.sh`, which activates `~/data/VirtualSink/
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --time=00:05:00
-#SBATCH --output=/cluster/users/alex116u1/data/VirtualSink/test_shell-%j.out
-#SBATCH --error=/cluster/users/alex116u1/data/VirtualSink/test_shell-%j.err
+#SBATCH --output=/cluster/users/alex116u1/data/VirtualSink/hpc/test_shell-%j.out
+#SBATCH --error=/cluster/users/alex116u1/data/VirtualSink/hpc/test_shell-%j.err
 
 set -euo pipefail
-source "$HOME/data/VirtualSink/hpc_runtime.sh"
+source "$HOME/data/VirtualSink/hpc/hpc_runtime.sh"
 status 'RUNNING smoke test'
 echo "Hello first"
 
@@ -51,7 +51,7 @@ python -u train.py --output-dir "runs/$SLURM_JOB_ID"
 
 `train.py` is a placeholder, not an existing training entry point verified by this guide. Use the real entry point and its supported options. The `-u` flag makes Python output available promptly in the job log. Store checkpoints and results on the remote shared filesystem, using separate output directories per job.
 
-For the existing CUDA diagnostic, use `python -u test.py` inside the batch script, or submit `test_gpu_access.sh`. Ensure dependencies are installed in the remote virtual environment before submitting. Request CPUs and memory appropriate to your experiment using site-supported settings; requesting more GPUs alone does not make a Python program distributed. The `comp013` exclusion is inherited from the existing GPU script.
+For the existing CUDA diagnostic, use `python -u hpc/test.py` inside the batch script, or submit `test_gpu_access.sh`. Ensure dependencies are installed in the remote virtual environment before submitting. Request CPUs and memory appropriate to your experiment using site-supported settings; requesting more GPUs alone does not make a Python program distributed. The `comp013` exclusion is inherited from the existing GPU script.
 
 ## Make code available remotely
 
@@ -64,8 +64,8 @@ $scp = "$env:WINDIR\System32\OpenSSH\scp.exe"
 & $scp -i server_access/private_key -o IdentitiesOnly=yes `
     -o ControlMaster=no -o ControlPath=none -o ControlPersist=no `
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile=server_access/known_hosts `
-    test_gpu_access.sh test.py hpc_runtime.sh `
-    'alex116u1@login02.c2.hpc.bibalex.org:data/VirtualSink/'
+    hpc/test_gpu_access.sh hpc/test.py hpc/hpc_runtime.sh `
+    'alex116u1@login02.c2.hpc.bibalex.org:data/VirtualSink/hpc/'
 if ($LASTEXITCODE -ne 0) { throw 'File transfer failed.' }
 ```
 
@@ -76,16 +76,16 @@ Save files with LF before copying; SCP preserves their bytes. This command repla
 After preparing and syncing a valid `test_shell.sh`, run the existing helper from PowerShell:
 
 ```powershell
-.\submit_hpc.ps1
+.\hpc\submit_hpc.ps1
 ```
 
 It connects to the HPC and executes:
 
 ```bash
-cd ~/data && cd VirtualSink && git pull && sbatch test_shell.sh
+cd ~/data/VirtualSink && git pull && cd hpc && sbatch test_shell.sh
 ```
 
-The `&&` chain prevents submission if the update fails. Use `.\submit_hpc.ps1 -Script test_gpu_access.sh` or `-Script train_job.sh` to select another root-level batch script. The helper sets absolute log paths beside the remote script, waits 20 seconds after submission returns, and opens a fresh SSH connection to read output, errors, and job state.
+The `&&` chain prevents submission if the update fails. Use `.\hpc\submit_hpc.ps1 -Script test_gpu_access.sh` or `-Script train_job.sh` to select another batch script in `hpc/`. The helper sets absolute log paths beside the remote script, waits 20 seconds after submission returns, and opens a fresh SSH connection to read output, errors, and job state.
 
 To submit another script or inspect jobs, define this PowerShell helper at the repository root:
 
@@ -100,9 +100,9 @@ function Invoke-Hpc {
     if ($LASTEXITCODE -ne 0) { throw "HPC command failed: $LASTEXITCODE" }
 }
 
-.\submit_hpc.ps1 -Script test_gpu_access.sh
+.\hpc\submit_hpc.ps1 -Script test_gpu_access.sh
 # For a training script you have created and synced:
-# .\submit_hpc.ps1 -Script train_job.sh
+# .\hpc\submit_hpc.ps1 -Script train_job.sh
 ```
 
 Single quotes preserve remote `$HOME` and other shell variables from PowerShell expansion. These examples use the host key already recorded during connection setup. If host verification fails, verify the host key with the HPC administrator before changing the trust record.
@@ -119,7 +119,7 @@ If output is missing or empty, inspect Slurm status, report pending or unconfirm
 
 `STARTED` confirms the batch shell started; `ENV_READY` confirms virtual-environment activation. `RUNNING` marks application launch, and heartbeat messages every 10 seconds show that the batch shell remains active. A heartbeat does not prove training is making progress. Training code must also print and flush real progress regularly: setup stages, data loading, epoch/step, loss, evaluation, and checkpoint saves. Use `python -u` and, where appropriate, `print(..., flush=True)`.
 
-Every new batch script must source `hpc_runtime.sh` before any workload command and retain the status/exit handling. Sync that helper along with the script. A missing environment must stop execution. Keep `.out` and `.err` in the same remote directory as the submitted script: the helper enforces this for repository-root scripts; when adapting a script for another directory, update its absolute `#SBATCH --output` and `--error` paths and submit with that directory as `--chdir`. Do not use `$HOME` inside Slurm directives.
+Every new batch script must source `hpc_runtime.sh` before any workload command and retain the status/exit handling. Sync that helper along with the script. A missing environment must stop execution. Keep `.out` and `.err` in the same remote directory as the submitted script: the helper enforces this for scripts in `hpc/`; when adapting a script for another directory, update its absolute `#SBATCH --output` and `--error` paths and submit with that directory as `--chdir`. Do not use `$HOME` inside Slurm directives.
 
 The heartbeat stops at exit. `COMPLETED` means the shell commands returned zero; inspect application metrics to confirm the intended result. Abrupt termination, such as a forced kill, can prevent final status printing, so also consult Slurm accounting. Each finite log check must close SSH afterward.
 
