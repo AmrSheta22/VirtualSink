@@ -1,0 +1,5 @@
+# Separate modern GPU environment; do not modify the legacy K80 environment.
+torch>=2.2
+transformers==4.51.3
+numpy>=1.23
+pytest>=7

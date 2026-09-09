@@ -1,0 +1,6 @@
+# Install extras in a separate --system-site-packages venv based on venv-k80.
+# The base runtime must remain torch==1.12.1+cu113, numpy==1.26.4.
+huggingface-hub==0.25.2
+safetensors==0.4.5
+tokenizers==0.20.3
+pyarrow==17.0.0
