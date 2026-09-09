@@ -9,7 +9,7 @@
 set -euo pipefail
 : "${SLURM_JOB_ID:?Submit with sbatch}"
 : "${PHASE3_ROOT:?Set the isolated experiment root}"
-release="$(cd "$(dirname "$0")/.." && pwd)"
+release="${SLURM_SUBMIT_DIR:?Submit from the immutable release directory}"
 echo "$(date -Is) STARTED job=$SLURM_JOB_ID host=$(hostname) release=$release"
 (while sleep 30; do echo "$(date -Is) Preparation still running"; done) &
 heartbeat=$!

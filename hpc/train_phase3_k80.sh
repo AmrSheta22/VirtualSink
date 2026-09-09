@@ -18,7 +18,7 @@ case "$slug" in
   qwen05) mode=attention ;;
   *) echo "Unknown model $slug"; exit 2 ;;
 esac
-release="$(cd "$(dirname "$0")/.." && pwd)"
+release="${SLURM_SUBMIT_DIR:?Submit from the immutable release directory}"
 echo "$(date -Is) STARTED job=$SLURM_JOB_ID host=$(hostname) model=$slug mode=$mode release=$release"
 source "$PHASE3_ROOT/environment/bin/activate"
 export PYTHONPATH="$release/src"
