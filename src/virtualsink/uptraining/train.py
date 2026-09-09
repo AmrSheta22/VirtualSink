@@ -86,12 +86,17 @@ def main():
     parser.add_argument("--save-seconds", type=int, default=600)
     parser.add_argument("--milestone-every", type=int, default=250)
     parser.add_argument("--max-hours", type=float, default=23.5)
+    parser.add_argument("--window-size", type=int, default=0, help="0: full causal attention; positive: includes current token")
     args = parser.parse_args()
     for name in ("steps", "seq_len", "batch_size", "accumulation", "chunk_size", "eval_every", "eval_batches", "save_every", "save_seconds", "milestone_every"):
         if getattr(args, name) <= 0:
             parser.error(f"{name} must be positive")
     if args.seq_len < 2 or not math.isfinite(args.gamma) or args.gamma < 0:
         parser.error("invalid sequence length or gamma")
+    if args.window_size < 0 or args.window_size > args.seq_len:
+        parser.error("window-size must be between 0 and seq-len")
+    if args.window_size and args.backend != "native":
+        parser.error("SWA currently requires the native backend")
     if not os.environ.get("SLURM_JOB_ID"):
         parser.error("training must run inside a Slurm allocation")
     if not torch.cuda.is_available():
@@ -121,8 +126,9 @@ def main():
     if args.backend == "native":
         if args.precision != "fp32":
             parser.error("native backend is validated for FP32 only")
-        from .native import load_native
+        from .native import load_native, set_window
         model = load_native(manifest["model_path"], args.chunk_size)
+        set_window(model, args.window_size or None)
     else:
         from transformers import AutoModelForCausalLM
         model = AutoModelForCausalLM.from_pretrained(manifest["model"], revision=manifest["revision"],

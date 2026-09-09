@@ -44,6 +44,7 @@ class Attention(nn.Module):
         self.sink_b = nn.Parameter(torch.full((self.heads,), -3.5))
         nn.init.normal_(self.sink_w, std=1e-4)
         self.sink_disabled = False
+        self.window_size = None
 
     def forward(self, x):
         batch, length, _ = x.shape
@@ -62,7 +63,7 @@ class Attention(nn.Module):
         w, b = self.sink_w, self.sink_b
         if self.sink_disabled:
             w, b = torch.zeros_like(w), torch.full_like(b, -1e6)
-        out, gates = sink_attention(q, k, v, w, b, self.chunk_size, self.training)
+        out, gates = sink_attention(q, k, v, w, b, self.chunk_size, self.training, self.window_size)
         return self.o_proj(out.transpose(1, 2).reshape(batch, length, -1)), gates
 
 
@@ -146,3 +147,10 @@ def load_native(directory, chunk_size=64):
     if result.unexpected_keys or any(not k.endswith((".sink_w", ".sink_b")) for k in result.missing_keys):
         raise ValueError(f"pretrained checkpoint mismatch: {result}")
     return model
+
+
+def set_window(model, window_size=None):
+    if window_size is not None and (isinstance(window_size, bool) or not isinstance(window_size, int) or window_size <= 0):
+        raise ValueError("window_size must be positive or None")
+    for layer in model.model.layers:
+        layer.self_attn.window_size = window_size

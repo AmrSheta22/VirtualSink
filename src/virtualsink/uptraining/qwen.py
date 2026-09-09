@@ -11,7 +11,7 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 
-def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True):
+def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=None):
     """Exact zero-value sink softmax, with query-chunk activation recomputation.
 
     GQA keys/values must already be repeated. FP32 normalization under AMP.
@@ -19,6 +19,8 @@ def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True):
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
+    if window_size is not None and (isinstance(window_size, bool) or not isinstance(window_size, int) or window_size < 1):
+        raise ValueError("window_size must be a positive integer or None")
     length = q.shape[-2]
     if k.shape != v.shape or q.shape != k.shape or length == 0:
         raise ValueError("expected matching nonempty (B,H,T,D) Q/K/V")
@@ -29,6 +31,8 @@ def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True):
             qc, key = qc.to(dtype), key.to(dtype)
             scores = (qc @ key.transpose(-1, -2)) * q.shape[-1] ** -0.5
             mask = torch.arange(length, device=q.device)[None, :] > positions[:, None]
+            if window_size is not None:
+                mask = mask | (torch.arange(length, device=q.device)[None, :] < positions[:, None] - window_size + 1)
             scores = scores.masked_fill(mask, -torch.inf)
             sink = (qc * weight.to(dtype)[None, :, None]).sum(-1) + bias.to(dtype)[None, :, None]
             lse = torch.logsumexp(scores, -1)
