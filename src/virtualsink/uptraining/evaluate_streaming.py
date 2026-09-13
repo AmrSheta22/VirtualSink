@@ -16,6 +16,13 @@ from .qwen import disable_sinks
 from .data import sha256
 from .streaming_fifo import StreamingDecoder
 
+CONFIRMATION_TITLES = [
+    '= Ise @-@ class battleship =', '= Second Battle of Naktong Bulge =',
+    '= Ironclad warship =', '= Temnospondyli =', '= Clayton Kershaw =',
+    '= Battle of D\u00fcrenstein =', '= Brock Lesnar =', '= Olmec colossal heads =',
+    '= Brad Stevens =', '= Nero =', '= Manila =', '= Bintulu =',
+]
+
 
 def write(path, value):
     tmp = path.with_suffix('.tmp')
@@ -124,6 +131,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model',choices=['qwen05','smollm135'],required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--confirmation-index',type=int,choices=range(len(CONFIRMATION_TITLES)))
     args=parser.parse_args()
     if not os.environ.get('SLURM_JOB_ID') or not torch.cuda.is_available():
         parser.error('Slurm GPU allocation required')
@@ -149,10 +157,13 @@ def main():
         elif title is not None: parts.append(row)
     if title: docs[title]=''.join(parts)
     selected=['= American Beauty ( 1999 film ) =','= 2003 Pacific typhoon season =']
+    if args.confirmation_index is not None:
+        selected=[CONFIRMATION_TITLES[args.confirmation_index]]
     texts=[docs[t] for t in selected]
     encoded=[tokenizer.encode(t).ids for t in texts]
     assert all(len(t)>=8193 for t in encoded)
     identity={'model':args.model,'job':os.environ['SLURM_JOB_ID'],'window':512,'predictions_per_article':8192,
+       'confirmation_index':args.confirmation_index,
        'articles':[{'title':t,'text_sha256':hashlib.sha256(s.encode()).hexdigest(),'available_tokens':len(ids)} for t,s,ids in zip(selected,texts,encoded)],
        'checkpoint_sha256':{v:sha256(p/'best.pt') for v,p in runs.items()},'training_config':cfg,
        'position_policy':'absolute RoPE; no rebasing; prefix control is not exact StreamingLLM positional treatment',
@@ -192,7 +203,7 @@ def main():
         del model
         torch.cuda.empty_cache()
     comparisons={}
-    for sid in range(2):
+    for sid in range(len(encoded)):
         reference=np.array(results[f'standard-prefix4-article{sid}']['per_token_ce'])
         comparisons[str(sid)]={}
         for label,result in results.items():
@@ -202,7 +213,7 @@ def main():
                     'excess_ce_vs_standard_prefix4':float((ce-reference)[a:b].mean())}
                     for name,a,b in [('pre_eviction',0,512),('post_eviction',512,8192),('beyond_10w',5120,8192)]}
     write(out/'comparisons.json',comparisons)
-    write(out/'complete.json',{'complete':True,'conditions_per_article':4,'articles':2})
+    write(out/'complete.json',{'complete':True,'conditions_per_article':4,'articles':len(encoded)})
 
 
 if __name__=='__main__': main()
