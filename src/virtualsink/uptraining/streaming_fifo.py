@@ -7,13 +7,14 @@ import torch
 
 
 class StreamingDecoder:
-    def __init__(self, model, capacity=None, retain_prefix=0):
+    def __init__(self, model, capacity=None, retain_prefix=0, rebase=False):
         if capacity is not None and (capacity < 1 or not 0 <= retain_prefix < capacity):
             raise ValueError("invalid cache capacity/prefix")
         self.model = model.eval()
         self.capacity, self.retain_prefix = capacity, retain_prefix
         self.cache = [None] * len(model.model.layers)
         self.position = 0
+        self.rebase = rebase
 
     @torch.no_grad()
     def step(self, token):
@@ -29,7 +30,8 @@ class StreamingDecoder:
             def rotate(t):
                 half = attn.head_dim // 2
                 return t * phase.cos() + torch.cat((-t[..., half:], t[..., :half]), -1) * phase.sin()
-            q, k = rotate(q), rotate(k)
+            if not self.rebase:
+                q, k = rotate(q), rotate(k)
             previous = self.cache[index]
             if previous is not None:
                 k, v = torch.cat((previous[0], k), 2), torch.cat((previous[1], v), 2)
@@ -38,6 +40,12 @@ class StreamingDecoder:
                 k = torch.cat((k[:, :, :self.retain_prefix], k[:, :, -recent:]), 2)
                 v = torch.cat((v[:, :, :self.retain_prefix], v[:, :, -recent:]), 2)
             self.cache[index] = k, v
+            if self.rebase:
+                # Cache unrotated keys; apply RoPE at their current cache indices.
+                phase = torch.cat((inv, inv)) * (k.shape[2]-1)
+                q = rotate(q)
+                phase = torch.arange(k.shape[2],device=x.device)[:,None] * torch.cat((inv,inv))[None,:]
+                k = rotate(k)
             groups = attn.heads // attn.kv_heads
             keys, values = k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1)
             scores = (q.float() @ keys.float().transpose(-1, -2)) * attn.head_dim ** -.5
