@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from query_virtual_sink_attention import QueryVirtualSinkAttention
+from virtualsink.attention import QueryVirtualSinkAttention
 
 
 @pytest.fixture(autouse=True)

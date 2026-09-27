@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "virtualsink"
+version = "0.1.0"
+description = "Query-conditioned virtual sink attention and controlled PyTorch experiments"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["torch>=1.12"]
+
+[project.optional-dependencies]
+experiments = ["numpy>=1.23", "matplotlib>=3.6"]
+dev = ["pytest>=7"]
+uptraining = ["torch>=2.2", "transformers==4.51.3", "numpy>=1.23"]
+
+[project.scripts]
+virtualsink-ablation = "virtualsink.experiments.ablation:main"
+virtualsink-controlled = "virtualsink.experiments.controlled:main"
+virtualsink-plot = "virtualsink.analysis.mechanisms:main"
+virtualsink-prepare-tokens = "virtualsink.uptraining.data:main"
+virtualsink-uptrain = "virtualsink.uptraining.train:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = ["integration: small end-to-end command-line checks"]

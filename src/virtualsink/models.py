@@ -5,45 +5,46 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import nn
 
-from query_virtual_sink_attention import QueryVirtualSinkAttention
+from .attention import ATTENTION_TYPES
 
 
-class StandardSoftmaxAttention(QueryVirtualSinkAttention):
-    """Ordinary causal softmax. BOS is available but its use is not forced."""
+class AttentionOnlyModel(nn.Module):
+    """One attention layer; no residual, normalization, MLP, or extra head.
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        del self.sink_w
-        del self.sink_b
+    Q/K/V/output projections remain trainable and matched across attention arms.
+    This removes alternative token-wise nonlinear paths without artificially
+    forcing BOS attention or prescribing sink probabilities.
+    """
 
-    def _sink_logits(self, query: torch.Tensor) -> None:
-        return None
+    def __init__(self, attn_type: str = "query_virtual_sink", d_model: int = 64,
+                 n_heads: int = 4, d_head: Optional[int] = None,
+                 num_layers: int = 1) -> None:
+        super().__init__()
+        if attn_type not in ATTENTION_TYPES:
+            raise ValueError(f"unknown attention type: {attn_type}")
+        if num_layers != 1:
+            raise ValueError("attention_only requires num_layers=1")
+        self.config = dict(architecture="attention_only", attn_type=attn_type,
+                           d_model=d_model, n_heads=n_heads, d_head=d_head, num_layers=1)
+        self.attn = ATTENTION_TYPES[attn_type](d_model, n_heads, d_head=d_head)
 
-
-class QuietSoftmaxAttention(StandardSoftmaxAttention):
-    """Softmax1: an exact constant +1 in the denominator, with zero value."""
-
-    def _sink_logits(self, query: torch.Tensor) -> torch.Tensor:
-        return query.new_zeros(query.shape[:-1])
-
-
-class StaticSinkAttention(QueryVirtualSinkAttention):
-    """Learnable per-head scalar sink, independent of each query."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        del self.sink_w
-
-    def _sink_logits(self, query: torch.Tensor) -> torch.Tensor:
-        return self.sink_b.to(query.dtype).view(1, -1, 1).expand(query.shape[:-1])
+    def forward(self, x: torch.Tensor, return_attention: bool = False
+                ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[Dict[str, torch.Tensor]]]]:
+        if return_attention:
+            prediction, info = self.attn(x, return_attention=True)
+            return prediction, [info]
+        return self.attn(x)
 
 
-ATTENTION_TYPES = {
-    "standard": StandardSoftmaxAttention,
-    "quiet": QuietSoftmaxAttention,
-    "static_sink": StaticSinkAttention,
-    "query_virtual_sink": QueryVirtualSinkAttention,
-}
+def build_model(config: dict) -> nn.Module:
+    """Load either architecture; old Transformer checkpoint configs still work."""
+    options = dict(config)
+    architecture = options.pop("architecture", "transformer")
+    if architecture == "attention_only":
+        return AttentionOnlyModel(**options)
+    if architecture == "transformer":
+        return ToyTransformer(**options)
+    raise ValueError(f"unknown architecture: {architecture}")
 
 
 class TransformerBlock(nn.Module):

@@ -9,9 +9,11 @@ import sys
 import pytest
 import torch
 
-from run_ablation import MSEAccumulator, load_checkpoint
-from synthetic_dataset import TriggerConditionalDataset
-from toy_models import ATTENTION_TYPES, ToyTransformer
+from virtualsink.training.metrics import MSEAccumulator
+from virtualsink.training.checkpoints import load_checkpoint
+from virtualsink.data import TriggerConditionalDataset
+from virtualsink.attention import ATTENTION_TYPES
+from virtualsink.models import ToyTransformer
 
 
 def test_exact_dataset_definition():
@@ -132,12 +134,12 @@ def test_metric_weighting_and_zero_predictor():
 @pytest.mark.skipif(not os.environ.get("SLURM_JOB_ID"), reason="Repository requires training through Slurm")
 def test_end_to_end_training_and_plotting(tmp_path):
     output = tmp_path / "smoke"
-    subprocess.run([sys.executable, "run_ablation.py", "--output-dir", str(output),
+    subprocess.run([sys.executable, "-m", "virtualsink.experiments.ablation", "--output-dir", str(output),
                     "--device", "cpu", "--steps", "2", "--batch-size", "2",
                     "--d-model", "8", "--seq-len", "8", "--n-heads", "2",
                     "--validation-samples", "4", "--test-samples", "4",
                     "--eval-every", "1", "--threads", "1"],
-                   cwd=Path(__file__).parent, check=True, timeout=120)
+                   cwd=tmp_path, check=True, timeout=120)
     summary = json.loads((output / "summary.json").read_text())
     assert len(summary["variants"]) == 4
     assert (output / "trigger_experiment_results.png").stat().st_size > 1000

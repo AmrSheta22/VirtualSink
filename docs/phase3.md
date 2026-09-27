@@ -1,5 +1,9 @@
 # Phase 3 model adaptation and uptraining
 
+**K80 follow-up:** A native FP32 backend and SmolLM-135M/Qwen2.5-0.5B pilots
+are now available. See [the K80 run protocol](phase3-k80-runs.md). The BF16
+restrictions and earlier compute status below describe the original backend.
+
 The Qwen2.5 integration is implemented and CPU numerically tested. No pretrained
 uptraining run has completed, and no language-model quality result is claimed.
 The Phase 1–2 report supports further investigation on a real language model;

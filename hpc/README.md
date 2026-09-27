@@ -1,158 +1,58 @@
-# Running VirtualSink experiments on Bibalex HPC
+# HPC
 
-All training, GPU tests, and experiment execution must run on HPC compute nodes through Slurm. Use this Windows machine to edit and transfer files. Use the HPC login node to update the checkout, submit jobs, and inspect results. Never start training with local `python`, local `bash`, or directly inside an SSH login session.
+## Phase 3 K80 update (2026-09-09)
 
-## Connection and paths
+GPU probe 214314 completed successfully on comp008 with PyTorch 1.12.1+cu113
+and a K80 (11,441 MiB). The older failures below remain relevant to comp013/
+comp016, which the Phase 3 jobs exclude. See [the K80 pilot protocol](../docs/phase3-k80-runs.md).
+The pilots use isolated committed release checkouts and a separate environment.
+GitHub publication was not approved; the release was transferred directly as a
+Git bundle to the authorized HPC account, preserving both dirty checkouts.
 
-All HPC tooling and documentation live in `hpc/`:
+All training and GPU tests run through Slurm, never locally or on the login node.
 
-- `README.md`: this guide and execution requirements.
-- `submit_hpc.ps1`: SSH submission and delayed output check.
-- `hpc_runtime.sh`: virtual environment, status messages, and heartbeat.
-- `test_shell.sh`: Slurm smoke test and batch template.
-- `test_gpu_access.sh` and `test.py`: Slurm GPU diagnostic.
+## Run
 
-Commands below run from the repository root unless stated otherwise. Local credentials remain in the ignored root `server_access/` folder; the submission helper resolves that path independently of the working directory. The remote virtual environment remains at the repository root. Batch logs live beside scripts in `~/data/VirtualSink/hpc/`.
-
-| Setting | Value |
-| --- | --- |
-| SSH account | `alex116u1@login02.c2.hpc.bibalex.org` |
-| Local private key | `server_access/private_key` |
-| Local host trust file | `server_access/known_hosts` |
-| Remote repository | `~/data/VirtualSink` |
-| Remote virtual environment | `~/data/VirtualSink/venv` |
-| Slurm account | `g.alex116` |
-
-Keep `server_access/` out of Git. The repository `.gitignore` excludes it. Never put the private key in a script or upload it to the HPC.
-
-## Write a batch script
-
-Both batch scripts source `hpc_runtime.sh`, which activates `~/data/VirtualSink/venv`, refuses execution outside Slurm, and prints timestamped status. Copy this template for new jobs. Save shell files as UTF-8 without a BOM with LF line endings.
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=virtualsink-smoke
-#SBATCH --account=g.alex116
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --exclude=comp013
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --time=00:05:00
-#SBATCH --output=/cluster/users/alex116u1/data/VirtualSink/hpc/test_shell-%j.out
-#SBATCH --error=/cluster/users/alex116u1/data/VirtualSink/hpc/test_shell-%j.err
-
-set -euo pipefail
-source "$HOME/data/VirtualSink/hpc/hpc_runtime.sh"
-status 'RUNNING smoke test'
-echo "Hello first"
-
-```
-
-Keep every `#SBATCH` directive above the first executable command. `%j` in log names becomes the job ID. Shell variables such as `$HOME` are not expanded inside directives. See the [official sbatch reference](https://slurm.schedmd.com/sbatch.html).
-
-For a training script, copy this template to `hpc/train_job.sh`, choose a descriptive job name, update the log filename prefixes, and set a suitable time limit. Replace the last `echo` with your actual training command, for example:
-
-```bash
-# Example only: train.py must exist and accept these arguments.
-mkdir -p "runs/$SLURM_JOB_ID"
-python -u train.py --output-dir "runs/$SLURM_JOB_ID"
-```
-
-`train.py` is a placeholder, not an existing training entry point verified by this guide. Use the real entry point and its supported options. The `-u` flag makes Python output available promptly in the job log. Store checkpoints and results on the remote shared filesystem, using separate output directories per job.
-
-For the existing CUDA diagnostic, use `python -u hpc/test.py` inside the batch script, or submit `test_gpu_access.sh`. Ensure dependencies are installed in the remote virtual environment before submitting. Request CPUs and memory appropriate to your experiment using site-supported settings; requesting more GPUs alone does not make a Python program distributed. The `comp013` exclusion is inherited from the existing GPU script.
-
-## Make code available remotely
-
-`git pull` fetches committed and pushed changes only. It does not copy local untracked files. Commit and push the intended scripts and source files through your normal Git workflow before submission. Do not commit the key, virtual environment, datasets, or generated checkpoints.
-
-For a one-off test with uncommitted files, copy only the required files from PowerShell at the repository root:
-
-Ensure `~/data/VirtualSink/hpc/` exists remotely first (normally created by pulling the reorganized repository). If necessary, use the SSH helper below with `mkdir -p ~/data/VirtualSink/hpc` before copying.
+From local PowerShell, after committing and pushing your changes:
 
 ```powershell
-$scp = "$env:WINDIR\System32\OpenSSH\scp.exe"
-& $scp -i server_access/private_key -o IdentitiesOnly=yes `
-    -o ControlMaster=no -o ControlPath=none -o ControlPersist=no `
-    -o StrictHostKeyChecking=yes -o UserKnownHostsFile=server_access/known_hosts `
-    hpc/test_gpu_access.sh hpc/test.py hpc/hpc_runtime.sh `
-    'alex116u1@login02.c2.hpc.bibalex.org:data/VirtualSink/hpc/'
-if ($LASTEXITCODE -ne 0) { throw 'File transfer failed.' }
-```
-
-Save files with LF before copying; SCP preserves their bytes. This command replaces remote files with the same names. Avoid modifying the shared checkout while queued or running jobs rely on it: Slurm retains the submitted batch script, but your Python files are still read from the filesystem. For concurrent experiments, use separate remote checkouts and point each batch script to its own checkout.
-
-## Submit and disconnect
-
-After preparing and syncing a valid `test_shell.sh`, run the existing helper from PowerShell:
-
-```powershell
-.\hpc\submit_hpc.ps1
-```
-
-It connects to the HPC and executes:
-
-```bash
-cd ~/data/VirtualSink && git pull && cd hpc && sbatch test_shell.sh
-```
-
-The `&&` chain prevents submission if the update fails. Use `.\hpc\submit_hpc.ps1 -Script test_gpu_access.sh` or `-Script train_job.sh` to select another batch script in `hpc/`. The helper sets absolute log paths beside the remote script, waits 20 seconds after submission returns, and opens a fresh SSH connection to read output, errors, and job state.
-
-To submit another script or inspect jobs, define this PowerShell helper at the repository root:
-
-```powershell
-function Invoke-Hpc {
-    param([Parameter(Mandatory)][string]$Command)
-    & "$env:WINDIR\System32\OpenSSH\ssh.exe" -T `
-        -i server_access/private_key -o IdentitiesOnly=yes -o BatchMode=yes `
-        -o ControlMaster=no -o ControlPath=none -o ControlPersist=no `
-        -o StrictHostKeyChecking=yes -o UserKnownHostsFile=server_access/known_hosts `
-        -o ConnectTimeout=20 'alex116u1@login02.c2.hpc.bibalex.org' $Command
-    if ($LASTEXITCODE -ne 0) { throw "HPC command failed: $LASTEXITCODE" }
-}
-
 .\hpc\submit_hpc.ps1 -Script test_gpu_access.sh
-# For a training script you have created and synced:
-# .\hpc\submit_hpc.ps1 -Script train_job.sh
+# Recheck without submitting again:
+.\hpc\submit_hpc.ps1 -Script test_gpu_access.sh -JobId 123456
 ```
 
-Single quotes preserve remote `$HOME` and other shell variables from PowerShell expansion. These examples use the host key already recorded during connection setup. If host verification fails, verify the host key with the HPC administrator before changing the trust record.
+For manual submission in an HPC SSH session:
 
-Successful submission prints `Submitted batch job <ID>`. This confirms acceptance, not successful execution. The SSH command exits and closes its connection after submission, including when the remote command fails. Slurm manages the job independently; no open terminal is required.
-
-## Check progress and results
-
-### Required execution confirmation for users and LLM agents
-
-Every submission must be followed by an actual read of the job's `.out` file, no earlier than **20 seconds after submission**. The submission helper implements the delay and first read attempt. The LLM must inspect that output before reporting that execution started; a job ID alone is insufficient.
-
-If output is missing or empty, inspect Slurm status, report pending or unconfirmed accurately, and check again after at least 20 seconds while awaiting confirmation. Do not resubmit merely because a job is queued. If Slurm reports a terminal failure before any output exists, report that failure rather than claiming a running job. For a short job already finished, report completed or failed based on logs and accounting instead of saying it is still running.
-
-`STARTED` confirms the batch shell started; `ENV_READY` confirms virtual-environment activation. `RUNNING` marks application launch, and heartbeat messages every 10 seconds show that the batch shell remains active. A heartbeat does not prove training is making progress. Training code must also print and flush real progress regularly: setup stages, data loading, epoch/step, loss, evaluation, and checkpoint saves. Use `python -u` and, where appropriate, `print(..., flush=True)`.
-
-Every new batch script must source `hpc_runtime.sh` before any workload command and retain the status/exit handling. Sync that helper along with the script. A missing environment must stop execution. Keep `.out` and `.err` in the same remote directory as the submitted script: the helper enforces this for scripts in `hpc/`; when adapting a script for another directory, update its absolute `#SBATCH --output` and `--error` paths and submit with that directory as `--chdir`. Do not use `$HOME` inside Slurm directives.
-
-The heartbeat stops at exit. `COMPLETED` means the shell commands returned zero; inspect application metrics to confirm the intended result. Abrupt termination, such as a forced kill, can prevent final status printing, so also consult Slurm accounting. Each finite log check must close SSH afterward.
-
-Use the `Invoke-Hpc` function above. Replace `212877` with the ID returned by your submission:
-
-```powershell
-Invoke-Hpc 'squeue -u alex116u1'
-Invoke-Hpc 'scontrol show job 212877'
-Invoke-Hpc 'sacct -j 212877 --format=JobID,JobName,State,ExitCode,Elapsed'
-Invoke-Hpc 'cd ~/data/VirtualSink/hpc && tail -n 80 test_gpu_access-212877.out'
-Invoke-Hpc 'cd ~/data/VirtualSink/hpc && tail -n 80 test_gpu_access-212877.err'
+```bash
+cd ~/data/VirtualSink
+git pull --ff-only
+cd hpc
+sbatch test_gpu_access.sh
+exit
 ```
 
-Current scripts use `<script-name>-<ID>.out` and `.err` beside the remote script. Job 212877 predates this convention and used `compare-212877.out` and `.err`. Log files may not exist until the job starts. Each check closes its SSH connection; avoid `tail -f` if you want the command to return immediately.
+If pulling fails, resolve the remote changes first. Do not submit an outdated script or blindly reset local edits. The helper stops on update failure. Local uncommitted files are not transferred by Git.
 
-A pending job is waiting for resources or another scheduling condition. Inspect the reason before resubmitting. A job disappearing from `squeue` does not establish success: inspect accounting and logs. Accounting availability and update timing depend on the cluster configuration. See the [Slurm command overview](https://slurm.schedmd.com/quickstart.html).
+## Check
 
-Cancel a specific job only when intended:
+Wait **at least 20 seconds** after submission, then read `hpc/test_gpu_access-<job-ID>.out` and `.err`. The PowerShell helper does this and closes SSH after each command. For manual submission, reconnect to read the files and close SSH afterward.
 
-```powershell
-Invoke-Hpc 'scancel 212877'
-```
+Users and LLMs must inspect actual output before confirming execution. Missing output means unconfirmed or queued; check `squeue -u alex116u1` and retry later without resubmitting. Use `sacct -j <job-ID> --format=JobID,State,ExitCode` for completion. A job ID alone does not mean the GPU works.
 
-If submission reports an invalid batch script, check the shebang and LF line endings. If the job fails after starting, read its error log for missing dependencies, incorrect paths, CUDA errors, or resource limits. Correct the cause before submitting again. Do not fall back to executing training on the local machine or login node.
+## Environment and current issue
+
+- Login: `alex116u1@login02.c2.hpc.bibalex.org`
+- Checkout: `~/data/VirtualSink`
+- Environment: `venv-k80` — Python 3.9, PyTorch 1.12.1+cu113, torchvision 0.13.1+cu113, NumPy <2.
+- Credentials: local `server_access/`, excluded from Git.
+- Logs stay beside their batch scripts in `hpc/`.
+
+The compatible PyTorch environment is installed. Jobs 212885 and 212886 still report no CUDA GPUs; the downgraded runtime alone did not fix device access. Earlier diagnostics on `comp016` also failed in `nvidia-smi`. Scripts exclude that node and retain the existing `comp013` exclusion; other nodes may have long queues. A successful GPU test is still required before training. Ask the HPC administrator about the GPU handle error on `comp016`.
+
+## Write a job
+
+Module check (job 212889, comp016): no module, `CUDA/11.1.1-GCC-10.2.0`, and `CUDA/11.7.0` all failed identically. Both allocated GPUs failed individually; `cuInit` returned 100 and `nvidia-smi` could not obtain either device handle. Loaded kernel driver: 470.256.02. The probe completed, but none of its CUDA tests passed. Logs remain in remote `hpc/module_probe-212889.out` and `.err`. Loading a toolkit module did not resolve device access; give these details to the HPC administrator. The [live site guide](https://hpc.bibalex.org/quick-start) was used because the supplied archive snapshot could not be fetched.
+
+Copy `test_shell.sh`, change the job name, time limit, and log filenames, then replace its final echo with your real `python -u ...` command. Keep the Slurm guard, environment activation, heartbeat, and exit reporting. Print real training progress (steps, loss, checkpoints) with flushing; a heartbeat only means the shell is active. Save shell files with LF endings.
+
+Submit the copy with `-Script your_script.sh`. Keep all `#SBATCH` directives before executable commands and use absolute log paths. Do not change shared code while jobs are queued or running.

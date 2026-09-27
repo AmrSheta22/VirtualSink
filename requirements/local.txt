@@ -1,0 +1,4 @@
+torch --extra-index-url https://download.pytorch.org/whl/cu126
+numpy==2.2.0
+matplotlib==3.10.1
+pytest==9.0.2

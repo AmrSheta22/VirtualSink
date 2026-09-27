@@ -13,9 +13,10 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from run_ablation import load_checkpoint
-from synthetic_dataset import TriggerConditionalDataset
-from toy_models import ATTENTION_TYPES, ToyTransformer
+from ..training.checkpoints import load_checkpoint
+from ..data import TriggerConditionalDataset
+from ..attention import ATTENTION_TYPES
+from ..models import build_model
 
 
 LABELS = {"standard": "Standard softmax", "quiet": "Quiet softmax (+1)",
@@ -25,7 +26,7 @@ COLORS = {"standard": "#6C757D", "quiet": "#CC7A00", "static_sink": "#8064A2",
 
 
 @torch.no_grad()
-def mechanism_statistics(model: ToyTransformer, loader: DataLoader) -> Dict[str, dict]:
+def mechanism_statistics(model: torch.nn.Module, loader: DataLoader) -> Dict[str, dict]:
     """Report every layer/head over held-out examples, with BOS excluded from
     non-trigger mechanism means (BOS itself has no physical alternative).
     MSE in the training runner includes BOS in non-trigger positions.
@@ -80,17 +81,17 @@ def generate_plots(run_dir: Path, layer: int = 0, head: int = 0, sample_index: i
     config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
     torch.set_num_threads(config.get("threads", 4))
     data = TriggerConditionalDataset(config["test_samples"], config["d_model"],
-                                     config["seq_len"], config["seed"] + 303)
+                                     config["seq_len"], config.get("data_seed", config["seed"]) + 303)
     sample = data[sample_index]
     trigger_index = int(sample["trigger_index"])
     length = config["seq_len"]
     examples, all_stats = {}, {}
     for attn_type in ATTENTION_TYPES:
         checkpoint = load_checkpoint(run_dir / attn_type / "best.pt")
-        model = ToyTransformer(**checkpoint["model_config"])
+        model = build_model(checkpoint["model_config"])
         model.load_state_dict(checkpoint["model_state"])
         model.eval()
-        if not 0 <= layer < len(model.blocks) or not 0 <= head < config["n_heads"]:
+        if not 0 <= layer < model.config["num_layers"] or not 0 <= head < config["n_heads"]:
             raise ValueError("layer/head index is out of range")
         with torch.no_grad():
             _, diagnostics = model(sample["x"].unsqueeze(0), return_attention=True)
@@ -157,7 +158,7 @@ def generate_plots(run_dir: Path, layer: int = 0, head: int = 0, sample_index: i
                  f"held-out sample {sample_index}", fontsize=16, fontweight="bold")
     output = run_dir / "trigger_experiment_results.png"
     fig.savefig(output, dpi=300, facecolor="white")
-    fig.savefig(output.with_suffix("pdf"), facecolor="white")
+    fig.savefig(output.with_suffix(".pdf"), facecolor="white")
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 3, figsize=(13, 3.6), constrained_layout=True)

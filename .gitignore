@@ -3,3 +3,25 @@
 *.err
 *.out
 venv/
+/venv-k80/
+__pycache__/
+*.py[cod]
+/runs/
+
+# Local build, test and authoring output.
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+/build/
+/dist/
+/artifacts/
+
+# Editor and Office temporary files.
+.DS_Store
+Thumbs.db
+~$*
+*.tmp

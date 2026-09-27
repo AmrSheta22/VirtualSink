@@ -25,14 +25,14 @@ def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=No
     if k.shape != v.shape or q.shape != k.shape or length == 0:
         raise ValueError("expected matching nonempty (B,H,T,D) Q/K/V")
 
-    def attend(qc, key, value, weight, bias, positions):
+    def attend(qc, key, value, weight, bias, positions, key_positions):
         with torch.autocast(q.device.type, enabled=False):
             dtype = torch.float64 if qc.dtype == torch.float64 else torch.float32
             qc, key = qc.to(dtype), key.to(dtype)
             scores = (qc @ key.transpose(-1, -2)) * q.shape[-1] ** -0.5
-            mask = torch.arange(length, device=q.device)[None, :] > positions[:, None]
+            mask = key_positions[None, :] > positions[:, None]
             if window_size is not None:
-                mask = mask | (torch.arange(length, device=q.device)[None, :] < positions[:, None] - window_size + 1)
+                mask = mask | (key_positions[None, :] < positions[:, None] - window_size + 1)
             scores = scores.masked_fill(mask, -torch.inf)
             sink = (qc * weight.to(dtype)[None, :, None]).sum(-1) + bias.to(dtype)[None, :, None]
             lse = torch.logsumexp(scores, -1)
@@ -43,9 +43,12 @@ def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=No
 
     outputs, gates = [], []
     for start in range(0, length, chunk_size):
-        args = (q[:, :, start:start + chunk_size], k, v, w, b,
-                torch.arange(start, min(start + chunk_size, length), device=q.device))
-        out, gate = (checkpoint(attend, *args, use_reentrant=False)
+        end = min(start + chunk_size, length)
+        left = max(0, start - window_size + 1) if window_size is not None else 0
+        right = end if window_size is not None else length
+        args = (q[:, :, start:end], k[:, :, left:right], v[:, :, left:right], w, b,
+                torch.arange(start, end, device=q.device), torch.arange(left, right, device=q.device))
+        out, gate = (checkpoint(attend, *args, use_reentrant=(recompute == "reentrant"))
                      if recompute and torch.is_grad_enabled() else attend(*args))
         outputs.append(out)
         gates.append(gate)

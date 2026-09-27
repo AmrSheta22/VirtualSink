@@ -32,7 +32,7 @@ class Attention(nn.Module):
         self.heads = config.num_attention_heads
         self.kv_heads = config.num_key_value_heads
         self.head_dim = getattr(config, "head_dim", config.hidden_size // self.heads)
-        self.rope_theta = config.rope_theta
+        self.rope_theta = getattr(config, "rope_theta", 10000.0)
         self.chunk_size = chunk_size
         bias = config.model_type == "qwen2" or getattr(config, "attention_bias", False)
         self.q_proj = nn.Linear(config.hidden_size, self.heads * self.head_dim, bias=bias)
@@ -63,7 +63,8 @@ class Attention(nn.Module):
         w, b = self.sink_w, self.sink_b
         if self.sink_disabled:
             w, b = torch.zeros_like(w), torch.full_like(b, -1e6)
-        out, gates = sink_attention(q, k, v, w, b, self.chunk_size, self.training, self.window_size)
+        out, gates = sink_attention(q, k, v, w, b, self.chunk_size,
+                                    "reentrant" if self.training and self.window_size is None else False, self.window_size)
         return self.o_proj(out.transpose(1, 2).reshape(batch, length, -1)), gates
 
 
@@ -90,7 +91,7 @@ class Layer(nn.Module):
     def forward(self, x):
         update, gate = self.self_attn(self.input_layernorm(x))
         x = x + update
-        return x + self.mlp(self.post_attention_layernorm(x)), gate
+        return x + self.mlp(self.post_attention_layernorm(x)), (gate.detach() if self.training else gate)
 
 
 class Backbone(nn.Module):
@@ -106,8 +107,12 @@ class Backbone(nn.Module):
             raise ValueError("KV cache not supported")
         x, gates = self.embed_tokens(input_ids), []
         for layer in self.layers:
-            x, gate = (checkpoint(layer, x, use_reentrant=False)
-                       if self.training and self.checkpointing else layer(x))
+            if self.training and self.checkpointing:
+                if not x.requires_grad:
+                    x.requires_grad_(True)
+                x, gate = checkpoint(layer, x, use_reentrant=True)
+            else:
+                x, gate = layer(x)
             gates.append(gate)
         return SimpleNamespace(last_hidden_state=self.norm(x), attentions=tuple(gates))
 
