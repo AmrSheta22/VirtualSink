@@ -83,8 +83,9 @@ def check_parity(model, tokens, window):
 
 
 @torch.no_grad()
-def evaluate(model, ids, tokenizer, prefix, out, label):
-    decoder = StreamingDecoder(model, 512, prefix)
+def evaluate(model, ids, tokenizer, prefix, out, label, rebase=False):
+    decoder = (StreamingDecoder(model, 512, prefix, rebase=True) if rebase
+               else StreamingDecoder(model, 512, prefix))
     losses, masses, scores, lses = [], [], [], []
     started = time.monotonic()
     for i, token in enumerate(ids[:-1]):
@@ -118,7 +119,7 @@ def evaluate(model, ids, tokenizer, prefix, out, label):
                   'context':tokenizer.decode(ids[max(0,pos-8):pos+1].tolist()),
                   'mass':float(a[pos,layer,head])})
     result={'bins':bins,'per_token_ce':losses,'mean_ce':float(np.mean(losses)),
-            'prefix':prefix,'capacity':512,'peak_cache_entries':max(k.shape[2] for k,v in decoder.cache),
+            'prefix':prefix,'capacity':512,'rebase':rebase,'peak_cache_entries':max(k.shape[2] for k,v in decoder.cache),
             'elapsed_seconds':time.monotonic()-started,'semantic_examples':examples}
     for name,left,right in [('before',0,512),('after',512,len(a))]:
         means=a[left:right].mean(0)

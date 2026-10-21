@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from virtualsink.uptraining.native import NativeLM
+from virtualsink.uptraining.native import NativeLM, set_window
 from virtualsink.uptraining.qwen import disable_sinks, parameter_groups
 from virtualsink.uptraining.train import language_loss, estimate_remaining
 
@@ -61,3 +61,30 @@ def test_native_sink_gradients_without_transformers():
         if param.requires_grad:
             assert param.grad is not None and torch.isfinite(param.grad).all(), name
     assert model.model.layers[0].self_attn.sink_w.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("window", [None, 4])
+@pytest.mark.parametrize("checkpointing", [False, True])
+def test_native_auxiliary_alone_reaches_sink_and_query_parameters(window, checkpointing):
+    """CE gradients must not conceal a detached auxiliary objective."""
+    from virtualsink.uptraining.qwen import auxiliary_loss
+    torch.manual_seed(9)
+    config = dict(model_type="qwen2", vocab_size=31, hidden_size=16, intermediate_size=32,
+        num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
+        hidden_act="silu", rope_theta=10000., rms_norm_eps=1e-6, tie_word_embeddings=True)
+    model = NativeLM(config, chunk_size=3)
+    parameter_groups(model, "attention")
+    set_window(model, window)
+    if checkpointing:
+        model.gradient_checkpointing_enable()
+    model.train()
+    tokens = torch.randint(0, 31, (2, 7))
+    gates = model.model(tokens).attentions
+    penalty, _ = auxiliary_loss(gates)
+    penalty.backward()
+    for layer in model.model.layers:
+        for parameter in (layer.self_attn.sink_w, layer.self_attn.sink_b,
+                          layer.self_attn.q_proj.weight):
+            assert parameter.grad is not None
+            assert torch.isfinite(parameter.grad).all()
+            assert parameter.grad.abs().sum() > 0

@@ -132,6 +132,9 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--variant", choices=["standard", "query_sink"], required=True)
     parser.add_argument("--steps", type=int, required=True)
+    parser.add_argument("--model-seed", type=int, default=8)
+    parser.add_argument("--warmup-steps", type=int, default=None,
+                        help="Explicit linear warmup; default retains the scaled original recipe")
     parser.add_argument("--microbatch", type=int, default=1)
     parser.add_argument("--sequence-length", type=int, default=8192)
     parser.add_argument("--window-size", type=int, default=512, help="0 selects full causal attention")
@@ -150,6 +153,8 @@ def main():
     global_batch = 1048576 // args.sequence_length
     if args.steps < 2 or args.microbatch < 1 or global_batch % args.microbatch:
         parser.error("steps >=2; microbatch must divide global batch")
+    if args.warmup_steps is not None and not 1 <= args.warmup_steps < round(args.steps * 500000 / 600000):
+        parser.error("warmup must be positive and end before decay starts")
     if not 0 <= args.window_size <= args.sequence_length or not math.isfinite(args.sink_bias) or not math.isfinite(args.sink_weight_std) or args.sink_weight_std <= 0:
         parser.error("invalid window or sink initialization")
     if min(args.chunk_size, args.eval_every, args.eval_blocks, args.save_seconds, args.max_hours) <= 0:
@@ -159,7 +164,7 @@ def main():
         parser.error("data budget/context mismatch")
     config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
     config.update(recipe=RECIPE_URL, manifest_sha256=sha256(args.data_dir / "manifest.json"),
-        model_seed=8, data_seed=42, initialization="random Nanotron standard; no pretrained weights",
+        model_seed=args.model_seed, data_seed=42, initialization="random Nanotron standard; no pretrained weights",
         global_batch=global_batch, sequence_length=args.sequence_length, auxiliary="none", gamma=0., precision="fp32",
         lr=.003, betas=[.9, .95], epsilon=1e-8, weight_decay=.01, clip_grad=1.,
         torch=str(torch.__version__), source_sha256={str(p.relative_to(Path(__file__).parents[1])): sha256(p)
@@ -170,7 +175,7 @@ def main():
         return
     if root.exists() and not (root / "last.pt").exists():
         parser.error("incomplete directory without resumable checkpoint")
-    model = initialize(8, args.chunk_size, dict(MODEL_CONFIG, max_position_embeddings=args.sequence_length),
+    model = initialize(args.model_seed, args.chunk_size, dict(MODEL_CONFIG, max_position_embeddings=args.sequence_length),
                        sink_weight_std=args.sink_weight_std, sink_bias=args.sink_bias)
     native.set_window(model, args.window_size or None)
     config["shared_initial_weights_sha256"] = shared_hash(model)
@@ -181,7 +186,7 @@ def main():
     model.gradient_checkpointing_enable()
     optimizer = torch.optim.AdamW(optimizer_groups(model, args.variant), lr=.003,
                                  betas=(.9, .95), eps=1e-8, foreach=False)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda s: schedule(s, args.steps))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda s: schedule(s, args.steps, args.warmup_steps))
     data = {split: MixedBlocks(args.data_dir, split) for split in ("train", "validation", "test")}
     progress = dict(step=0, micro=0, lm_sum=0., best=math.inf, training_seconds=0.)
     resumed = (root / "last.pt").exists()

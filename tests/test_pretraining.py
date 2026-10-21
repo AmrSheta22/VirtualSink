@@ -46,6 +46,16 @@ def test_original_and_shortened_schedule():
     assert schedule(83, 100) == 1 and schedule(100, 100) == 0
 
 
+def test_explicit_ten_update_warmup():
+    rates = [.003 * schedule(step, 70, warmup_steps=10) for step in range(11)]
+    assert rates == pytest.approx([step * .0003 for step in range(11)])
+    assert schedule(57, 70, 10) == 1
+    assert 0 < schedule(59, 70, 10) < 1
+    assert schedule(70, 70, 10) == 0
+    with pytest.raises(ValueError):
+        schedule(0, 70, 58)
+
+
 def test_mixture_and_document_partition():
     order, quota = mixture_order(51200)
     assert quota.tolist() == [35840, 7680, 4096, 3072, 512]

@@ -22,14 +22,16 @@ WEIGHTS = dict(fineweb=.70, cosmopedia=.15, python=.08, math=.06, stackoverflow=
 RECIPE_URL = "https://github.com/huggingface/smollm/blob/a041759883ec7152d18fb985ea49be641a0bceef/text/pretraining/smollm1/config_smollm1_135M.yaml"
 
 
-def schedule(step, total):
+def schedule(step, total, warmup_steps=None):
     """Nanotron LambdaLR convention: step=0 precedes the first update.
 
 Scale YAML's 5k warmup / 500k decay start / 100k decay across 600k steps.
 The YAML cooldown fraction is 1/6, despite the blog's rounded 20% description.
 """
-    warmup = max(1, round(total * 5000 / 600000))
+    warmup = max(1, round(total * 5000 / 600000)) if warmup_steps is None else warmup_steps
     decay_start = round(total * 500000 / 600000)
+    if not isinstance(warmup, int) or not 1 <= warmup < decay_start:
+        raise ValueError("warmup must be a positive integer before decay starts")
     if step <= warmup:
         return step / warmup
     if step < decay_start:

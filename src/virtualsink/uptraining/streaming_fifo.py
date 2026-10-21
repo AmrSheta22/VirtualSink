@@ -4,6 +4,7 @@ Evaluation only. Stored KV has at most capacity entries, including the current
 token. The virtual sink is a scalar logit, not a retained physical cache slot.
 """
 import torch
+from .native import virtual_values
 
 
 class StreamingDecoder:
@@ -49,15 +50,22 @@ class StreamingDecoder:
             groups = attn.heads // attn.kv_heads
             keys, values = k.repeat_interleave(groups, 1), v.repeat_interleave(groups, 1)
             scores = (q.float() @ keys.float().transpose(-1, -2)) * attn.head_dim ** -.5
-            sink = (q.float() * attn.sink_w[None, :, None]).sum(-1) + attn.sink_b[None, :, None]
+            w, b = attn.sink_w, attn.sink_b
+            if w.ndim == 2:
+                w, b = w[:, None, :], b[:, None]
+            sink = q.float() @ w.transpose(-1, -2) + b[None, :, None, :]
             if attn.sink_disabled:
                 sink = torch.full_like(sink, -1e6)
-            weights = torch.cat((scores, sink[..., None]), -1).softmax(-1)
-            out = weights[..., :-1] @ values.float()
+            weights = torch.cat((scores, sink), -1).softmax(-1)
+            physical_count = scores.shape[-1]
+            out = weights[..., :physical_count] @ values.float()
+            virtual = virtual_values(attn)
+            if virtual is not None:
+                out = out + weights[..., physical_count:] @ virtual.float()
             x = x + attn.o_proj(out.transpose(1, 2).reshape(1, 1, -1))
             x = x + layer.mlp(layer.post_attention_layernorm(x))
-            masses.append(weights[0, :, 0, -1])
-            sink_logits.append(sink[0, :, 0])
+            masses.append(weights[0, :, 0, physical_count:].sum(-1))
+            sink_logits.append(sink.logsumexp(-1)[0, :, 0])
             physical_lse.append(scores.logsumexp(-1)[0, :, 0])
         self.position += 1
         logits = self.model.lm_head(self.model.model.norm(x))[0, 0]

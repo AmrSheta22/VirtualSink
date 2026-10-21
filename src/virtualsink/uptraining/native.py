@@ -64,7 +64,8 @@ class Attention(nn.Module):
         if self.sink_disabled:
             w, b = torch.zeros_like(w), torch.full_like(b, -1e6)
         out, gates = sink_attention(q, k, v, w, b, self.chunk_size,
-                                    "reentrant" if self.training and self.window_size is None else False, self.window_size)
+                                    "reentrant" if self.training and self.window_size is None else False, self.window_size,
+                                    virtual_values(self))
         return self.o_proj(out.transpose(1, 2).reshape(batch, length, -1)), gates
 
 
@@ -91,7 +92,8 @@ class Layer(nn.Module):
     def forward(self, x):
         update, gate = self.self_attn(self.input_layernorm(x))
         x = x + update
-        return x + self.mlp(self.post_attention_layernorm(x)), (gate.detach() if self.training else gate)
+        # Training objectives consume these gates, so retain their gradient path.
+        return x + self.mlp(self.post_attention_layernorm(x)), gate
 
 
 class Backbone(nn.Module):
@@ -159,3 +161,32 @@ def set_window(model, window_size=None):
         raise ValueError("window_size must be positive or None")
     for layer in model.model.layers:
         layer.self_attn.window_size = window_size
+
+
+def virtual_values(attn):
+    """The first sink has an identically zero value, without an optimizer parameter."""
+    if not hasattr(attn, "sink_v"):
+        return None
+    return torch.cat((attn.sink_v.new_zeros(attn.heads, 1, attn.head_dim), attn.sink_v), dim=1)
+
+
+def configure_sinks(model, count=1, value_init_scale=1e-9):
+    """Configure after loading pretrained weights; tiny values scale with V-weight RMS."""
+    import math
+    if count not in (1, 4) or not math.isfinite(value_init_scale) or value_init_scale < 0:
+        raise ValueError("supported sink counts are 1 and 4, with finite nonnegative scale")
+    if count == 1:
+        return
+    for layer in model.model.layers:
+        a = layer.self_attn
+        if hasattr(a, "sink_v"):
+            raise ValueError("sinks already configured")
+        a.sink_w = nn.Parameter(a.sink_w.new_empty(a.heads, count, a.head_dim))
+        nn.init.normal_(a.sink_w, std=1e-4)
+        # Preserve the aggregate initial sink logit rather than multiplying its mass by four.
+        a.sink_b = nn.Parameter(a.sink_b.new_full((a.heads, count), -3.5 - math.log(count)))
+        rms = a.v_proj.weight.detach().square().mean().sqrt()
+        directions = torch.randn(a.heads, count - 1, a.head_dim, device=a.sink_w.device)
+        directions = directions / directions.square().mean(-1, keepdim=True).sqrt()
+        scales = torch.arange(1, count, device=a.sink_w.device).float() / (count - 1) * value_init_scale
+        a.sink_v = nn.Parameter(directions * rms * scales[None, :, None])

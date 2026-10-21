@@ -18,6 +18,19 @@ from .data import TokenBlocks, sha256
 from .qwen import adapt_qwen, auxiliary_loss, parameter_groups, disable_sinks
 
 
+def lr_multipliers(current, steps, warmup, base_lr, sink_lr, match_step=0):
+    """Warm up, smoothly remove the sink LR advantage, then share cosine decay."""
+    if current < warmup:
+        decay = current / max(1, warmup)
+    else:
+        decay = max(0., .5 * (1 + math.cos(math.pi * (current - warmup) / max(1, steps - warmup))))
+    if not match_step:
+        return decay, decay
+    progress = min(1., max(0., (current - warmup) / (match_step - warmup)))
+    ratio = 1 + (sink_lr / base_lr - 1) * .5 * (1 + math.cos(math.pi * progress))
+    return decay, decay * ratio * base_lr / sink_lr
+
+
 def language_loss(model, tokens, chunk_size=128):
     # Avoid allocating B*T*vocabulary logits (Qwen vocabulary ~152k).
     result = model.model(input_ids=tokens, use_cache=False, output_attentions=True,
@@ -71,6 +84,12 @@ def main():
     parser.add_argument("--variant", choices=("query_sink", "standard"), default="query_sink")
     parser.add_argument("--auxiliary", choices=("anti_collapse", "supplied", "none"), default="anti_collapse")
     parser.add_argument("--gamma", type=float, default=0.01)
+    parser.add_argument("--base-lr", type=float, default=2e-5)
+    parser.add_argument("--sink-lr", type=float, default=1e-4)
+    parser.add_argument("--sink-match-step", type=int, default=0,
+                        help="0: fixed group ratio; otherwise smoothly match sink/base rates at this step")
+    parser.add_argument("--sink-count", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--sink-value-init-scale", type=float, default=1e-9)
     parser.add_argument("--steps", type=int, default=15000)
     parser.add_argument("--seq-len", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -88,6 +107,15 @@ def main():
     parser.add_argument("--max-hours", type=float, default=23.5)
     parser.add_argument("--window-size", type=int, default=0, help="0: full causal attention; positive: includes current token")
     args = parser.parse_args()
+    if any(not math.isfinite(v) or v <= 0 for v in (args.base_lr, args.sink_lr)):
+        parser.error("learning rates must be finite and positive")
+    if not math.isfinite(args.sink_value_init_scale) or args.sink_value_init_scale < 0:
+        parser.error("invalid sink value initialization scale")
+    if args.sink_count != 1 and args.backend != "native":
+        parser.error("multiple sinks require the native backend")
+    warmup = min(100, args.steps // 10)
+    if args.sink_match_step and not warmup < args.sink_match_step < args.steps:
+        parser.error("sink-match-step must be after warmup and before the final step")
     for name in ("steps", "seq_len", "batch_size", "accumulation", "chunk_size", "eval_every", "eval_batches", "save_every", "save_seconds", "milestone_every"):
         if getattr(args, name) <= 0:
             parser.error(f"{name} must be positive")
@@ -126,8 +154,9 @@ def main():
     if args.backend == "native":
         if args.precision != "fp32":
             parser.error("native backend is validated for FP32 only")
-        from .native import load_native, set_window
+        from .native import load_native, set_window, configure_sinks
         model = load_native(manifest["model_path"], args.chunk_size)
+        configure_sinks(model, args.sink_count, args.sink_value_init_scale)
         set_window(model, args.window_size or None)
     else:
         from transformers import AutoModelForCausalLM
@@ -149,7 +178,7 @@ def main():
     if len(datasets["train"]) < required:
         parser.error(f"need {required * args.seq_len:,} training tokens; refusing silent corpus repetition")
     model.to("cuda")
-    groups = parameter_groups(model, args.mode)
+    groups = parameter_groups(model, args.mode, args.base_lr, args.sink_lr)
     if args.variant == "standard":
         disable_sinks(model)
         for param in groups[1]["params"]:
@@ -157,12 +186,11 @@ def main():
         groups = groups[:1]
     optimizer = torch.optim.AdamW(groups, foreach=False)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    warmup = min(100, args.steps // 10)
-    def lr_scale(current):
-        if current < warmup:
-            return current / max(1, warmup)
-        return max(0., .5 * (1 + math.cos(math.pi * (current - warmup) / max(1, args.steps - warmup))))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_scale)
+    def base_scale(current):
+        return lr_multipliers(current, args.steps, warmup, args.base_lr, args.sink_lr, args.sink_match_step)[0]
+    def sink_scale(current):
+        return lr_multipliers(current, args.steps, warmup, args.base_lr, args.sink_lr, args.sink_match_step)[1]
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, [base_scale] if args.variant == "standard" else [base_scale, sink_scale])
     step, best = 0, math.inf
     if args.resume:
         saved = torch.load(args.resume, map_location="cpu")

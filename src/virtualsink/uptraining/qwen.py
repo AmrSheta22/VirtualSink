@@ -11,7 +11,7 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 
-def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=None):
+def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=None, sink_values=None):
     """Exact zero-value sink softmax, with query-chunk activation recomputation.
 
     GQA keys/values must already be repeated. FP32 normalization under AMP.
@@ -25,7 +25,14 @@ def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=No
     if k.shape != v.shape or q.shape != k.shape or length == 0:
         raise ValueError("expected matching nonempty (B,H,T,D) Q/K/V")
 
-    def attend(qc, key, value, weight, bias, positions, key_positions):
+    if w.ndim == 2:
+        w, b = w[:, None, :], b[:, None]
+    if sink_values is None:
+        sink_values = v.new_zeros(w.shape)
+    if w.shape != sink_values.shape or b.shape != w.shape[:2] or w.shape[0] != q.shape[1] or w.shape[-1] != q.shape[-1]:
+        raise ValueError("invalid sink score/value shapes")
+
+    def attend(qc, key, value, weight, bias, virtual_values, positions, key_positions):
         with torch.autocast(q.device.type, enabled=False):
             dtype = torch.float64 if qc.dtype == torch.float64 else torch.float32
             qc, key = qc.to(dtype), key.to(dtype)
@@ -34,11 +41,13 @@ def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=No
             if window_size is not None:
                 mask = mask | (key_positions[None, :] < positions[:, None] - window_size + 1)
             scores = scores.masked_fill(mask, -torch.inf)
-            sink = (qc * weight.to(dtype)[None, :, None]).sum(-1) + bias.to(dtype)[None, :, None]
+            sink = qc @ weight.to(dtype).transpose(-1, -2) + bias.to(dtype)[None, :, None, :]
             lse = torch.logsumexp(scores, -1)
-            gate = torch.sigmoid(lse - sink)
-            weights = torch.softmax(torch.cat((scores, sink[..., None]), -1), -1)[..., :-1]
-            output = weights @ value.to(dtype)
+            gate = torch.sigmoid(lse - torch.logsumexp(sink, -1))
+            weights = torch.softmax(torch.cat((scores, sink), -1), -1)
+            physical_count = scores.shape[-1]
+            output = weights[..., :physical_count] @ value.to(dtype)
+            output = output + weights[..., physical_count:] @ virtual_values.to(dtype)
         return output.to(value.dtype), gate
 
     outputs, gates = [], []
@@ -46,7 +55,7 @@ def sink_attention(q, k, v, w, b, chunk_size=128, recompute=True, window_size=No
         end = min(start + chunk_size, length)
         left = max(0, start - window_size + 1) if window_size is not None else 0
         right = end if window_size is not None else length
-        args = (q[:, :, start:end], k[:, :, left:right], v[:, :, left:right], w, b,
+        args = (q[:, :, start:end], k[:, :, left:right], v[:, :, left:right], w, b, sink_values,
                 torch.arange(start, end, device=q.device), torch.arange(left, right, device=q.device))
         out, gate = (checkpoint(attend, *args, use_reentrant=(recompute == "reentrant"))
                      if recompute and torch.is_grad_enabled() else attend(*args))
@@ -127,7 +136,7 @@ def parameter_groups(model, mode="attention", base_lr=2e-5, sink_lr=1e-4):
         raise ValueError("mode must be attention or full")
     base, sinks = [], []
     for name, param in model.named_parameters():
-        sink = name.endswith((".sink_w", ".sink_b"))
+        sink = name.endswith((".sink_w", ".sink_b", ".sink_v"))
         projection = any(f".self_attn.{p}." in name for p in ("q_proj", "k_proj", "v_proj", "o_proj"))
         param.requires_grad_(sink or mode == "full" or projection)
         if param.requires_grad:
